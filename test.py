@@ -32,8 +32,7 @@ def test():
 
     test_list, label_list = parse_voc(images_path, annotation_path, labels)
     label_list = labels
-    # test_list = test_list[:int(len(test_list) * 0.1)]
-    test_list = test_list[:1]
+    test_list = test_list[:int(len(test_list) * 0.1)]
 
     test_generator = Dataloader(
         train_list=test_list,
@@ -49,7 +48,6 @@ def test():
     test_model = model_from_json(infer_model_json)
     test_model.load_weights('best_weights.h5')
 
-    # print((test_generator[0][0][0]).shape)
     test_d = test_generator[0][0][0]
     # print(test_d.shape)
     # average_precisions = evaluate(test_model, test_data)
@@ -59,8 +57,8 @@ def test():
 
     predict(test_model, test_data, anchors)
 
-    # average_precisions = evaluate(test_model, test_generator)
-    # print('\n')
-    # for label, average_precision in average_precisions.items():
-    #     print(labels[label] + ': {:.4f}'.format(average_precision))
-    # print('mAP: {:.4f}'.format(sum(average_precisions.values()) / len(average_precisions)))
+    average_precisions = evaluate(test_model, test_generator)
+    print('\n')
+    for label, average_precision in average_precisions.items():
+        print(labels[label] + ': {:.4f}'.format(average_precision))
+    print('mAP: {:.4f}'.format(sum(average_precisions.values()) / len(average_precisions)))
