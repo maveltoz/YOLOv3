@@ -41,15 +41,11 @@ def yolo():
     label_list = labels
 
     train_valid_split = int(0.9 * len(train_list))
-    # train_valid_split = int(len(train_list))
     np.random.seed(0)
     np.random.shuffle(train_list)
     np.random.seed()
     valid_list = train_list[train_valid_split:]
     train_list = train_list[:train_valid_split]
-    # train_list = train_list[1:2]
-    # valid_list = valid_list[:10]
-    # valid_list = train_list
 
     max_box_per_image = max([len(images['object']) for images in train_list])
 
@@ -78,7 +74,6 @@ def yolo():
         max_box_per_image=max_box_per_image,
         max_grid=[config['model']['max_input_size'], config['model']['max_input_size']],
         batch_size=config['train']['batch_size'],
-        #warmup_batches=config['train']['warmup_epochs'],
         warmup_batches=warmup_batches,
         ignore_thresh=config['train']['ignore_thresh'],
         grid_scales=config['train']['grid_scales'],
@@ -98,9 +93,7 @@ def yolo():
     train_model.fit(
         train_generator,
         #validation_data=valid_generator,
-        #steps_per_epoch=len(train_generator) * config['train']['train_times'], # 4509 * 16 = 72144
-        #steps_per_epoch=config['train']['train_times'],
-        #steps_per_epoch=int(len(train_generator)/config['train']['batch_size']),
+        #steps_per_epoch=len(train_generator) * config['train']['train_times'],
         epochs=config['train']['nb_epochs'] + config['train']['warmup_epochs'],
         callbacks=callbacks
     )
