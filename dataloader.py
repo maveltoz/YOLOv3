@@ -2,11 +2,12 @@ from tensorflow.keras import utils
 import numpy as np
 import math
 import cv2
-import imgaug as ia
-import imgaug.augmenters as iaa
-from imgaug.augmentables.bbs import BoundingBox, BoundingBoxesOnImage
 from utils.bbox import BoundBox, bbox_iou
+from utils.images import apply_random_scale_and_crop, random_distort_image, random_flip, correct_bounding_boxes
 from utils.utils import normalize
+# import imgaug as ia
+# import imgaug.augmenters as iaa
+# from imgaug.augmentables.bbs import BoundingBox, BoundingBoxesOnImage
 
 
 class Dataloader(utils.Sequence):
@@ -17,7 +18,6 @@ class Dataloader(utils.Sequence):
                  max_box_per_image=42,
                  batch_size=1,
                  ):
-        # self.is_epoch_0 = 0
         self.train_list = train_list
         self.label_list = label_list
         self.batch_size = batch_size
@@ -26,6 +26,11 @@ class Dataloader(utils.Sequence):
         self.net_h = 416
         self.net_w = 416
         self.downsample = 32
+        self.min_input_size = 224
+        self.max_input_size = 480
+        self.min_net_size = (self.min_input_size // self.downsample) * self.downsample
+        self.max_net_size = (self.max_input_size // self.downsample) * self.downsample
+        self.jitter = 0.3
         self.on_epoch_end()
         np.random.shuffle(self.train_list)
 
@@ -37,12 +42,17 @@ class Dataloader(utils.Sequence):
         np.random.shuffle(self.indexes)
 
     def __getitem__(self, idx):
-        base_grid_h, base_grid_w = self.net_h // self.downsample, self.net_w // self.downsample
+        net_h, net_w = self._get_net_size(idx)
+        base_grid_h, base_grid_w = net_h // self.downsample, net_w // self.downsample
 
-        indexes = self.indexes[idx * self.batch_size:(idx + 1) * self.batch_size]
+        l_bound = idx * self.batch_size
+        r_bound = (idx + 1) * self.batch_size
 
-        x_batch = np.zeros((self.batch_size, self.net_h, self.net_w, 3))
+        if r_bound > len(self.train_list):
+            r_bound = len(self.train_list)
+            l_bound = r_bound - self.batch_size
 
+        x_batch = np.zeros((self.batch_size, net_h, net_w, 3))
         t_batch = np.zeros((self.batch_size, 1, 1, 1, self.max_box_per_image, 4))
 
         yolo_1 = np.zeros((self.batch_size, 1 * base_grid_h, 1 * base_grid_w, len(self.anchors) // 3,
@@ -58,19 +68,20 @@ class Dataloader(utils.Sequence):
         dummy_yolo_2 = np.zeros((self.batch_size, 1))
         dummy_yolo_3 = np.zeros((self.batch_size, 1))
 
-        for idx, data_idx in enumerate(indexes):
-            img = cv2.imread(self.train_list[data_idx]['filename'])
-            objs = self.train_list[data_idx]['object']
+        true_box_index = 0
 
-            true_box_index = 0
-            aug_img, aug_objs = self.augmentation(img, objs)
+        for instance_count, train_instace in enumerate(self.train_list[l_bound:r_bound]):
+            aug_img, aug_objs = self.augmentation(train_instace, net_h, net_w)
 
             for obj in aug_objs:
                 max_anchor = None
                 max_index = -1
                 max_iou = -1
 
-                shifted_box = BoundBox(0, 0, obj.x2 - obj.x1, obj.y2 - obj.y1)
+                shifted_box = BoundBox(0,
+                                       0,
+                                       obj['xmax'] - obj['xmin'],
+                                       obj['ymax'] - obj['ymin'])
 
                 for i in range(len(self.anchors)):
                     anchor = self.anchors[i]
@@ -84,56 +95,80 @@ class Dataloader(utils.Sequence):
                 yolo = yolos[max_index // 3]
                 grid_h, grid_w = yolo.shape[1:3]
 
-                center_x = .5 * (obj.x1 + obj.x2)
-                center_y = .5 * (obj.y1 + obj.y2)
+                center_x = .5 * (obj['xmin'] + obj['xmax'])
+                center_x = center_x / float(net_w) * grid_w
+                center_y = .5 * (obj['ymin'] + obj['ymax'])
+                center_y = center_y / float(net_h) * grid_h
 
-                center_x = center_x / float(self.net_w) * grid_w
-                center_y = center_y / float(self.net_h) * grid_h
+                w = np.log((obj['xmax'] - obj['xmin']) / float(max_anchor.xmax))
+                h = np.log((obj['ymax'] - obj['ymin']) / float(max_anchor.ymax))
 
-                w = np.log((obj.x2 - obj.x1) / float(max_anchor.xmax))
-                h = np.log((obj.y2 - obj.y1) / float(max_anchor.ymax))
-                
                 box = [center_x, center_y, w, h]
 
-                obj_idx = self.label_list.index(obj.label)
+                obj_indx = self.label_list.index(obj['name'])
 
                 grid_x = int(np.floor(center_x))
                 grid_y = int(np.floor(center_y))
 
-                yolo[idx, grid_y, grid_x, max_index % 3] = 0
-                yolo[idx, grid_y, grid_x, max_index % 3, 0:4] = box
-                yolo[idx, grid_y, grid_x, max_index % 3, 4] = 1.
-                yolo[idx, grid_y, grid_x, max_index % 3, 5 + obj_idx] = 1
+                yolo[instance_count, grid_y, grid_x, max_index % 3] = 0
+                yolo[instance_count, grid_y, grid_x, max_index % 3, 0:4] = box
+                yolo[instance_count, grid_y, grid_x, max_index % 3, 4] = 1.
+                yolo[instance_count, grid_y, grid_x, max_index % 3, 5 + obj_indx] = 1
 
-                true_box = [center_x, center_y, obj.x2 - obj.x1, obj.y2 - obj.y1]
-                t_batch[idx, 0, 0, 0, true_box_index] = true_box
+                true_box = [center_x, center_y, obj['xmax'] - obj['xmin'], obj['ymax'] - obj['ymin']]
+                t_batch[instance_count, 0, 0, 0, true_box_index] = true_box
 
                 true_box_index += 1
                 true_box_index = true_box_index % self.max_box_per_image
 
-            x_batch[idx] = normalize(aug_img)
+            x_batch[instance_count] = normalize(aug_img)
 
         return [x_batch, t_batch, yolo_1, yolo_2, yolo_3], [dummy_yolo_1, dummy_yolo_2, dummy_yolo_3]
 
-    def augmentation(self, img, objs):
-        images = np.array([img])
-        _bbs = []
+    def _get_net_size(self, idx):
+        if idx % 10 == 0:
+            net_size = self.downsample * np.random.randint(self.min_net_size / self.downsample,
+                                                           self.max_net_size / self.downsample + 1)
+            # print("resizing: ", net_size, net_size)
+            self.net_h, self.net_w = net_size, net_size
+        return self.net_h, self.net_w
 
-        for obj in objs:
-            _bbs.append(BoundingBox(x1=obj['xmin'], y1=obj['ymin'], x2=obj['xmax'], y2=obj['ymax'], label=obj['name']))
+    def augmentation(self, instance, net_h, net_w):
+        image_name = instance['filename']
+        image = cv2.imread(image_name)
 
-        bbs = BoundingBoxesOnImage(_bbs, shape=img.shape)
+        if image is None: print('Cannot find ', image_name)
+        image = image[:, :, ::-1]
 
-        seq = iaa.Sequential([
-            iaa.Resize(size={"height": self.net_h, "width": self.net_w}),
-        ])
+        image_h, image_w, _ = image.shape
 
-        seq_det = seq.to_deterministic()
+        dw = self.jitter * image_w
+        dh = self.jitter * image_h
 
-        image_aug = seq_det.augment_images(images)[0]
-        bbs_aug = seq_det.augment_bounding_boxes([bbs])[0]
+        new_ar = (image_w + np.random.uniform(-dw, dw)) / (image_h + np.random.uniform(-dh, dh))
+        scale = np.random.uniform(0.25, 2)
 
-        return image_aug, bbs_aug
+        if new_ar < 1:
+            new_h = int(scale * net_h)
+            new_w = int(net_h * new_ar)
+        else:
+            new_w = int(scale * net_w)
+            new_h = int(net_w / new_ar)
+
+        dx = int(np.random.uniform(0, net_w - new_w))
+        dy = int(np.random.uniform(0, net_h - new_h))
+
+        im_sized = apply_random_scale_and_crop(image, new_w, new_h, net_w, net_h, dx, dy)
+
+        im_sized = random_distort_image(im_sized)
+
+        flip = np.random.randint(2)
+        im_sized = random_flip(im_sized, flip)
+
+        all_objs = correct_bounding_boxes(instance['object'], new_w, new_h, net_w, net_h, dx, dy, flip, image_w,
+                                          image_h)
+
+        return im_sized, all_objs
 
     def num_classes(self):
         return len(self.label_list)
@@ -162,3 +197,4 @@ class Dataloader(utils.Sequence):
 
     def load_image(self, i):
         return cv2.imread(self.train_list[i]['filename'])
+
