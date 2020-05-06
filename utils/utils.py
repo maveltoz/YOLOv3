@@ -1,23 +1,14 @@
-import cv2
-import numpy as np
 import os
-import json
 import tensorflow as tf
+import json
+import numpy as np
+import cv2
 from .bbox import BoundBox, bbox_iou
 from scipy.special import expit
-from PIL import Image
 
 
 def _sigmoid(x):
     return expit(x)
-
-
-def makedirs(path):
-    try:
-        os.makedirs(path)
-    except OSError:
-        if not os.path.isdir(path):
-            raisedecode_netout
 
 
 def evaluate(model,
@@ -26,9 +17,7 @@ def evaluate(model,
              obj_thresh=0.5,
              nms_thresh=0.45,
              net_h=416,
-             net_w=416,
-             save_path=None):
-
+             net_w=416):
     all_detections = [[None for i in range(generator.num_classes())] for j in range(generator.size())]
     all_annotations = [[None for i in range(generator.num_classes())] for j in range(generator.size())]
 
@@ -56,6 +45,9 @@ def evaluate(model,
 
         for label in range(generator.num_classes()):
             all_annotations[i][label] = annotations[annotations[:, 4] == label, :4].copy()
+
+        if i % 500 == 0:
+            print('evaluate :', i, '/', generator.size())
 
     average_precisions = {}
 
@@ -123,10 +115,13 @@ def correct_yolo_boxes(boxes, image_h, image_w, net_h, net_w):
         x_offset, x_scale = (net_w - new_w) / 2. / net_w, float(new_w) / net_w
         y_offset, y_scale = (net_h - new_h) / 2. / net_h, float(new_h) / net_h
 
-        boxes[i].xmin = int((boxes[i].xmin - x_offset) / x_scale * image_w)
-        boxes[i].xmax = int((boxes[i].xmax - x_offset) / x_scale * image_w)
-        boxes[i].ymin = int((boxes[i].ymin - y_offset) / y_scale * image_h)
-        boxes[i].ymax = int((boxes[i].ymax - y_offset) / y_scale * image_h)
+        try:
+            boxes[i].xmin = int((boxes[i].xmin - x_offset) / x_scale * image_w)
+            boxes[i].xmax = int((boxes[i].xmax - x_offset) / x_scale * image_w)
+            boxes[i].ymin = int((boxes[i].ymin - y_offset) / y_scale * image_h)
+            boxes[i].ymax = int((boxes[i].ymax - y_offset) / y_scale * image_h)
+        except:
+            boxes[i].classes[:20] = 0
 
 
 def do_nms(boxes, nms_thresh):
@@ -155,6 +150,7 @@ def decode_netout(netout, anchors, obj_thresh, net_h, net_w):
     nb_box = 3
     netout = tf.reshape(netout, (grid_h, grid_w, nb_box, -1))
     nb_class = netout.shape[-1] - 5
+
     boxes = []
 
     net = np.array(netout)
@@ -208,10 +204,6 @@ def preprocess_input(image, net_h, net_w):
     return new_image
 
 
-def normalize(image):
-    return image / 255.
-
-
 def get_yolo_boxes(model, images, net_h, net_w, anchors, obj_thresh, nms_thresh):
     image_h, image_w, _ = images[0].shape
     nb_images = len(images)
@@ -221,6 +213,7 @@ def get_yolo_boxes(model, images, net_h, net_w, anchors, obj_thresh, nms_thresh)
         batch_input[i] = preprocess_input(images[i], net_h, net_w)
 
     batch_output = model.predict_on_batch(batch_input)
+
     batch_boxes = [None] * nb_images
 
     for i in range(nb_images):
@@ -228,7 +221,7 @@ def get_yolo_boxes(model, images, net_h, net_w, anchors, obj_thresh, nms_thresh)
         boxes = []
 
         for j in range(len(yolos)):
-            yolo_anchors = anchors[(2 - j) * 6:(3 - j) * 6]  # config['model']['anchors']
+            yolo_anchors = anchors[(2 - j) * 6:(3 - j) * 6]
             boxes += decode_netout(yolos[j], yolo_anchors, obj_thresh, net_h, net_w)
 
         correct_yolo_boxes(boxes, image_h, image_w, net_h, net_w)
@@ -237,9 +230,10 @@ def get_yolo_boxes(model, images, net_h, net_w, anchors, obj_thresh, nms_thresh)
 
         # config_path = 'config.json'
         # with open(config_path) as config_buffer:
-        #     config = json.loads(config_buffer.read())
+        #    config = json.loads(config_buffer.read())
         # labels = config['model']['labels']
-        # draw_boxes(batch_input[i], boxes, labels, nms_thresh)
+
+        # draw_boxes(images, boxes, labels, nms_thresh)
 
         batch_boxes[i] = boxes
 
@@ -283,8 +277,10 @@ def _softmax(x, axis=-1):
 
     return e_x / e_x.sum(axis, keepdims=True)
 
+
 def normalize(image):
     return image / 255.
+
 
 def draw_boxes(image, boxes, labels, obj_thresh):
     for box in boxes:
@@ -298,17 +294,10 @@ def draw_boxes(image, boxes, labels, obj_thresh):
                 print(labels[i] + ': ' + str(box.classes[i] * 100) + '%')
 
         if label >= 0:
-            _image = np.array(image)
-
-            img = cv2.rectangle(_image, (int(box.xmin), int(box.ymin)), (int(box.xmax), int(box.ymax)), (0, 255, 0), 3)
-            cv2.putText(img=img,
-                        text=label_str + ' ' + str(box.get_score()),
-                        org=(box.xmin, box.ymin - 13),
-                        fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                        fontScale=1e-3 * img.shape[0],
-                        color=(0, 255, 0),
-                        thickness=2)
-            cv2.imshow('image', img)
-            cv2.waitKey()
-
-    # return img
+            cv2.rectangle(image, (box.xmin, box.ymin), (box.xmax, box.ymax), (0, 255, 0), 3)
+            cv2.putText(image,
+                       label_str + ' ' + str(box.get_score()),
+                       (box.xmin, box.ymin - 13),
+                       cv2.FONT_HERSHEY_SIMPLEX,
+                       1e-3 * image.shape[0],
+                       (0, 255, 0), 2)
