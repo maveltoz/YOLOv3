@@ -1,9 +1,10 @@
 import tensorflow as tf
 import tensorflow.keras as keras
-from tensorflow.keras.layers import Conv2D, Input, BatchNormalization, LeakyReLU, ZeroPadding2D, UpSampling2D, Lambda
-from tensorflow.keras.layers import add, concatenate
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Layer
+from tensorflow.keras.layers import Conv2D, Input, BatchNormalization, LeakyReLU, ZeroPadding2D, UpSampling2D, Lambda
+from tensorflow.keras.layers import add, concatenate
+
 
 debug = False
 
@@ -27,7 +28,6 @@ class YoloLayer(Layer):
                          tf.float32)
         cell_y = tf.transpose(a=cell_x, perm=(0, 2, 1, 3, 4))
         self.cell_grid = tf.tile(tf.concat([cell_x, cell_y], -1), [batch_size, 1, 1, 3, 1])
-
         super(YoloLayer, self).__init__(**kwargs)
 
     def build(self, input_shape):
@@ -42,21 +42,21 @@ class YoloLayer(Layer):
 
         batch_seen = tf.Variable(0.)
 
-        grid_h = tf.shape(input=y_true)[1]  # 13*a
-        grid_w = tf.shape(input=y_true)[2]  # 13*a
+        grid_h = tf.shape(input=y_true)[1]
+        grid_w = tf.shape(input=y_true)[2]
         grid_factor = tf.reshape(tf.cast([grid_w, grid_h], tf.float32), [1, 1, 1, 1, 2])
 
         net_h = tf.shape(input=input_image)[1]
         net_w = tf.shape(input=input_image)[2]
         net_factor = tf.reshape(tf.cast([net_w, net_h], tf.float32), [1, 1, 1, 1, 2])
 
-        pred_box_xy = (self.cell_grid[:, :grid_h, :grid_w, :, :] + tf.sigmoid(y_pred[..., :2]))  # sigma(t_xy) + c_xy
-        pred_box_wh = y_pred[..., 2:4]  # t_wh
-        pred_box_conf = tf.expand_dims(tf.sigmoid(y_pred[..., 4]), 4)  # adjust confidence
-        pred_box_class = y_pred[..., 5:]  # adjust class probabilities
+        pred_box_xy = (self.cell_grid[:, :grid_h, :grid_w, :, :] + tf.sigmoid(y_pred[..., :2]))
+        pred_box_wh = y_pred[..., 2:4]
+        pred_box_conf = tf.expand_dims(tf.sigmoid(y_pred[..., 4]), 4)
+        pred_box_class = y_pred[..., 5:]
 
-        true_box_xy = y_true[..., 0:2]  # (sigma(t_xy) + c_xy)
-        true_box_wh = y_true[..., 2:4]  # t_wh
+        true_box_xy = y_true[..., 0:2]
+        true_box_wh = y_true[..., 2:4]
         true_box_conf = tf.expand_dims(y_true[..., 4], 4)
         true_box_class = tf.argmax(input=y_true[..., 5:], axis=-1)
 
@@ -91,9 +91,6 @@ class YoloLayer(Layer):
         best_ious = tf.reduce_max(input_tensor=iou_scores, axis=4)
         conf_delta *= tf.expand_dims(tf.cast(best_ious < self.ignore_thresh, tf.float32), 4)
 
-        """
-        Compute some online statistics
-        """
         true_xy = true_box_xy / grid_factor
         true_wh = tf.exp(true_box_wh) * self.anchors / net_factor
 
@@ -138,7 +135,6 @@ class YoloLayer(Layer):
         batch_seen = tf.compat.v1.assign_add(batch_seen, 1.)
 
         true_box_xy, true_box_wh, xywh_mask = tf.cond(pred=tf.less(batch_seen, self.warmup_batches + 1),
-                                                      # true_box_xy, true_box_wh, xywh_mask = tf.cond(batch_seen,
                                                       true_fn=lambda: [true_box_xy + (
                                                               0.5 + self.cell_grid[:, :grid_h, :grid_w, :, :]) * (
                                                                                1 - object_mask),
@@ -204,7 +200,6 @@ def _conv_block(inp, convs, do_skip=True):
                    conv['kernel'],
                    strides=conv['stride'],
                    padding='valid' if conv['stride'] > 1 else 'same',
-
                    name='conv_' + str(conv['layer_idx']),
                    use_bias=False if conv['bnorm'] else True)(x)
         if conv['bnorm']:
@@ -229,32 +224,46 @@ def create_model(
         xywh_scale,
         class_scale
 ):
-    input_image = Input(shape=(416, 416, 3))
+    # input_image = Input(shape=(416, 416, 3))
+    # true_boxes = Input(shape=(1, 1, 1, max_box_per_image, 4))
+    # true_yolo_1 = Input(shape=(
+    #     13, 13, len(anchors) // 6, 4 + 1 + nb_class))
+    # true_yolo_2 = Input(shape=(
+    #     26, 26, len(anchors) // 6, 4 + 1 + nb_class))
+    # true_yolo_3 = Input(shape=(
+    #     52, 52, len(anchors) // 6, 4 + 1 + nb_class))
+
+    input_image = Input(shape=(None, None, 3))
     true_boxes = Input(shape=(1, 1, 1, max_box_per_image, 4))
     true_yolo_1 = Input(shape=(
-        13, 13, len(anchors) // 6, 4 + 1 + nb_class))
+        None, None, len(anchors) // 6, 4 + 1 + nb_class))
     true_yolo_2 = Input(shape=(
-        26, 26, len(anchors) // 6, 4 + 1 + nb_class))
+        None, None, len(anchors) // 6, 4 + 1 + nb_class))
     true_yolo_3 = Input(shape=(
-        52, 52, len(anchors) // 6, 4 + 1 + nb_class))
+        None, None, len(anchors) // 6, 4 + 1 + nb_class))
 
+    # Layer  0 => 4
     x = _conv_block(input_image,
                     [{'filter': 32, 'kernel': 3, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 0},
                      {'filter': 64, 'kernel': 3, 'stride': 2, 'bnorm': True, 'leaky': True, 'layer_idx': 1},
                      {'filter': 32, 'kernel': 1, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 2},
                      {'filter': 64, 'kernel': 3, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 3}])
 
+    # Layer  5 => 8
     x = _conv_block(x, [{'filter': 128, 'kernel': 3, 'stride': 2, 'bnorm': True, 'leaky': True, 'layer_idx': 5},
                         {'filter': 64, 'kernel': 1, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 6},
                         {'filter': 128, 'kernel': 3, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 7}])
 
+    # Layer  9 => 11
     x = _conv_block(x, [{'filter': 64, 'kernel': 1, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 9},
                         {'filter': 128, 'kernel': 3, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 10}])
 
+    # Layer 12 => 15
     x = _conv_block(x, [{'filter': 256, 'kernel': 3, 'stride': 2, 'bnorm': True, 'leaky': True, 'layer_idx': 12},
                         {'filter': 128, 'kernel': 1, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 13},
                         {'filter': 256, 'kernel': 3, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 14}])
 
+    # Layer 16 => 36
     for i in range(7):
         x = _conv_block(x, [
             {'filter': 128, 'kernel': 1, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 16 + i * 3},
@@ -262,10 +271,12 @@ def create_model(
 
     skip_36 = x
 
+    # Layer 37 => 40
     x = _conv_block(x, [{'filter': 512, 'kernel': 3, 'stride': 2, 'bnorm': True, 'leaky': True, 'layer_idx': 37},
                         {'filter': 256, 'kernel': 1, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 38},
                         {'filter': 512, 'kernel': 3, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 39}])
 
+    # Layer 41 => 61
     for i in range(7):
         x = _conv_block(x, [
             {'filter': 256, 'kernel': 1, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 41 + i * 3},
@@ -273,15 +284,18 @@ def create_model(
 
     skip_61 = x
 
+    # Layer 62 => 65
     x = _conv_block(x, [{'filter': 1024, 'kernel': 3, 'stride': 2, 'bnorm': True, 'leaky': True, 'layer_idx': 62},
                         {'filter': 512, 'kernel': 1, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 63},
                         {'filter': 1024, 'kernel': 3, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 64}])
 
+    # Layer 66 => 74
     for i in range(3):
         x = _conv_block(x, [
             {'filter': 512, 'kernel': 1, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 66 + i * 3},
             {'filter': 1024, 'kernel': 3, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 67 + i * 3}])
 
+    # Layer 75 => 79
     x = _conv_block(x, [{'filter': 512, 'kernel': 1, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 75},
                         {'filter': 1024, 'kernel': 3, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 76},
                         {'filter': 512, 'kernel': 1, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 77},
@@ -289,6 +303,8 @@ def create_model(
                         {'filter': 512, 'kernel': 1, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 79}],
                     do_skip=False)
 
+    # Layer 80 => 82
+    # pred1 : Layer 81
     pred_yolo_1 = _conv_block(x, [
         {'filter': 1024, 'kernel': 3, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 80},
         {'filter': (3 * (5 + nb_class)), 'kernel': 1, 'stride': 1, 'bnorm': False, 'leaky': False, 'layer_idx': 81}],
@@ -304,11 +320,13 @@ def create_model(
                             xywh_scale,
                             class_scale)([input_image, pred_yolo_1, true_yolo_1, true_boxes])
 
+    # Layer 83 => 86
     x = _conv_block(x, [{'filter': 256, 'kernel': 1, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 84}],
                     do_skip=False)
     x = UpSampling2D(2)(x)
     x = concatenate([x, skip_61])
 
+    # Layer 87 => 91
     x = _conv_block(x, [{'filter': 256, 'kernel': 1, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 87},
                         {'filter': 512, 'kernel': 3, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 88},
                         {'filter': 256, 'kernel': 1, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 89},
@@ -316,6 +334,8 @@ def create_model(
                         {'filter': 256, 'kernel': 1, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 91}],
                     do_skip=False)
 
+    # Layer 92 => 94
+    # pred2 : Layer 93
     pred_yolo_2 = _conv_block(x,
                               [{'filter': 512, 'kernel': 3, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 92},
                                {'filter': (3 * (5 + nb_class)), 'kernel': 1, 'stride': 1, 'bnorm': False,
@@ -331,11 +351,14 @@ def create_model(
                             xywh_scale,
                             class_scale)([input_image, pred_yolo_2, true_yolo_2, true_boxes])
 
+    # Layer 95 => 98
     x = _conv_block(x, [{'filter': 128, 'kernel': 1, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 96}],
                     do_skip=False)
     x = UpSampling2D(2)(x)
     x = concatenate([x, skip_36])
 
+    # Layer 99 => 106
+    # pred3 : Layer 105
     pred_yolo_3 = _conv_block(x,
                               [{'filter': 128, 'kernel': 1, 'stride': 1, 'bnorm': True, 'leaky': True, 'layer_idx': 99},
                                {'filter': 256, 'kernel': 3, 'stride': 1, 'bnorm': True, 'leaky': True,
